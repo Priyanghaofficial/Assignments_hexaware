@@ -1,0 +1,89 @@
+-- Day 5 Assignment - Set 3: Hospital Patient Records
+
+-- Task 2
+create database if not exists day5_hospital;
+use day5_hospital;
+
+create table patient(
+ patient_id int primary key,
+ patient_name varchar(30) not null,
+ address varchar(60)
+) engine=InnoDB;
+
+create table department(
+ dept_id int primary key,
+ dept_name varchar(30) not null
+) engine=InnoDB;
+
+create table doctor(
+ doctor_id int primary key,
+ doctor_name varchar(30) not null,
+ dept_id int not null,
+ foreign key(dept_id) references department(dept_id)
+) engine=InnoDB;
+
+create table visit(
+ visit_id int primary key,
+ patient_id int not null,
+ doctor_id int not null,
+ visit_date date not null,
+ diagnosis varchar(60),
+ prescription varchar(60),
+ foreign key(patient_id) references patient(patient_id),
+ foreign key(doctor_id) references doctor(doctor_id),
+ check(visit_date between '2000-01-01' and '2099-12-31')
+) engine=InnoDB;
+
+create table billing(
+ bill_id int primary key,
+ visit_id int not null unique,
+ bill_amount decimal(10,2) not null check(bill_amount>=0),
+ status varchar(10) not null default 'OPEN',
+ foreign key(visit_id) references visit(visit_id)
+) engine=InnoDB;
+
+-- Task 3
+rename table billing to bills;
+show tables;
+rename table bills to billing;
+
+create database day5_demo;
+use day5_demo;
+create table sample(id int);
+insert into sample values(1);
+select * from sample;
+use day5_hospital;
+drop database day5_demo;
+create database day5_demo;
+show tables from day5_demo;
+use day5_hospital;
+
+-- Task 4
+insert into patient values
+(1,'Priya','Chennai'),(2,'Arun','Madurai'),(3,'Meena','Salem');
+insert into department values(1,'General'),(2,'Dental');
+insert into doctor values(1,'Ravi',1),(2,'Anu',2);
+insert into visit values
+(1,1,1,'2026-11-05','Fever','Paracetamol'),
+(2,2,2,'2026-11-10','Tooth pain','Pain relief'),
+(3,3,1,'2026-10-15','Cold','Rest');
+insert into billing(bill_id,visit_id,bill_amount) values
+(1,1,500),(2,2,800),(3,3,300);
+select * from billing;
+
+select * from patient where patient_id=1;
+update patient set address='Coimbatore' where patient_id=1;
+select * from patient where patient_id=1;
+
+select * from visit where visit_id=3;
+delete from billing where bill_id=3;
+delete from visit where visit_id=3;
+select * from visit;
+
+select patient_name,visit_date from patient
+inner join visit using(patient_id)
+where visit_date between '2026-11-01' and '2026-11-30';
+
+select doctor_name,dept_name from doctor
+inner join department using(dept_id)
+where dept_name='Dental';

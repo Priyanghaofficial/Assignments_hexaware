@@ -1,0 +1,196 @@
+-- database and table creation
+create database bankdb;
+use bankdb;
+
+create table accounts(
+account_id int primary key,
+account_name varchar(30),
+balance decimal(10,2),
+status varchar(20)
+) engine=innodb;
+
+insert into accounts values
+(1,'Arun',10000,'active'),
+(2,'Priya',5000,'active'),
+(3,'Rahul',3000,'inactive');
+
+select * from accounts;
+
+-- task 1
+delimiter //
+
+create procedure transfer()
+begin
+    declare exit handler for sqlexception
+    begin
+        rollback;
+        select 'Transfer failed' as result;
+    end;
+
+    start transaction;
+
+    if exists(select * from accounts
+    where account_id=1 and balance>=1000 and status='active')
+    and exists(select * from accounts
+    where account_id=2 and status='active') then
+
+        update accounts set balance=balance-1000
+        where account_id=1;
+
+        update accounts set balance=balance+1000
+        where account_id=2;
+
+        commit;
+        select 'Transfer successful' as result;
+    else
+        rollback;
+        select 'Transfer failed' as result;
+    end if;
+end //
+
+delimiter ;
+
+call transfer();
+select * from accounts;
+
+-- task 2
+select * from accounts; -- before debit
+
+start transaction;
+
+update accounts set balance=balance-2000
+where account_id=1;
+
+select * from accounts; -- after debit
+
+-- assume a failure before crediting the receiver
+rollback;
+
+select * from accounts; -- after rollback
+-- expected Arun balance: 9000, 7000, 9000
+-- expected Priya balance: 6000 throughout
+
+-- task 3
+start transaction;
+
+update accounts set balance=balance-500
+where account_id=1;
+
+update accounts set balance=balance+500
+where account_id=2;
+
+savepoint transferdone;
+
+update accounts set balance=balance-50
+where account_id=1;
+
+select * from accounts; -- before cancelling fee
+
+rollback to savepoint transferdone;
+
+commit;
+
+select * from accounts;
+
+-- task 4
+create table transactions(
+transaction_id int primary key,
+account_id int,
+transaction_date date,
+amount decimal(10,2),
+balance decimal(10,2)
+);
+
+insert into transactions values
+(1,1,'2026-11-01',10000,10000),
+(2,1,'2026-11-05',-1000,9000),
+(3,1,'2026-11-10',-500,8500),
+(4,2,'2026-11-01',5000,5000),
+(5,2,'2026-11-05',1000,6000),
+(6,2,'2026-11-10',500,6500);
+
+with monthly as(
+select * from transactions
+where month(transaction_date)=11
+and year(transaction_date)=2026
+)
+select account_id,transaction_date,amount,balance,
+row_number() over(partition by account_id order by transaction_date,transaction_id) as rownum,
+lag(balance) over(partition by account_id order by transaction_date,transaction_id) as previousbalance
+from monthly;
+
+-- task 5: autocommit
+set autocommit=0;
+
+update accounts set balance=balance-100
+where account_id=1;
+
+rollback;
+
+select * from accounts;
+
+set autocommit=1;
+
+update accounts set balance=balance-100
+where account_id=1;
+
+rollback;
+
+select * from accounts;
+-- balance stays 8400 because autocommit saved the update
+update accounts set balance=8500 where account_id=1;
+
+-- open two separate MySQL connections for the next steps
+-- run each session block separately in the given order
+-- read committed: session 1
+use bankdb;
+set session transaction isolation level read committed;
+
+start transaction;
+
+select balance from accounts where account_id=1;
+
+-- read committed: session 2
+use bankdb;
+start transaction;
+
+update accounts set balance=balance+500
+where account_id=1;
+
+commit;
+
+-- session 1 again
+select balance from accounts where account_id=1;
+
+commit;
+
+-- expected: first read 8500, second read 9000
+
+-- repeatable read: session 1
+set session transaction isolation level repeatable read;
+
+start transaction;
+
+select balance from accounts where account_id=1;
+
+-- repeatable read: session 2
+start transaction;
+
+update accounts set balance=balance+500
+where account_id=1;
+
+commit;
+
+-- session 1 again
+select balance from accounts where account_id=1;
+
+commit;
+
+-- expected: both reads show 9000
+-- after commit, the latest balance is 9500
+select balance from accounts where account_id=1;
+
+-- isolation level note:
+-- read committed shows the latest committed balance at each select.
+-- repeatable read shows the same balance until the transaction ends.
+-- expected outputs are not actual execution results.

@@ -1,0 +1,171 @@
+-- assignment 9: telecom low-balance follow-up
+-- run the complete script in mysql workbench
+create database telecom_assignment9;
+use telecom_assignment9;
+
+-- sample tables
+create table subscribers(
+ subscriber_id int primary key,
+ subscriber_name varchar(40),
+ phone varchar(15),
+ plan_type varchar(10),
+ balance decimal(10,2),
+ secret_pin varchar(10)
+);
+create table plans(
+ plan_id int primary key,
+ plan_name varchar(30),
+ validity_days int
+);
+create table recharge_history(
+ recharge_id int auto_increment primary key,
+ subscriber_id int,
+ plan_id int,
+ amount decimal(10,2),
+ recharge_date datetime,
+ foreign key(subscriber_id) references subscribers(subscriber_id),
+ foreign key(plan_id) references plans(plan_id)
+);
+create table notifications(
+ notification_id int auto_increment primary key,
+ subscriber_id int,
+ message varchar(100),
+ created_at datetime,
+ foreign key(subscriber_id) references subscribers(subscriber_id)
+);
+
+insert into subscribers values
+(1,'arun','9000000001','prepaid',30,'1111'),
+(2,'priya','9000000002','prepaid',80,'2222'),
+(3,'meena','9000000003','prepaid',15,'3333'),
+(4,'ravi','9000000004','postpaid',10,'4444'),
+(5,'kiran','9000000005','prepaid',45,'5555');
+insert into plans values
+(1,'basic',28),(2,'monthly',30);
+
+-- task 1: views
+create view vw_prepaid_subscribers as
+select subscriber_id,subscriber_name,phone,balance
+from subscribers where plan_type='prepaid';
+
+create view vw_recharge_summary as
+select s.subscriber_id,s.subscriber_name,
+count(r.recharge_id) as recharge_count,
+coalesce(sum(r.amount),0) as total_recharged
+from subscribers s left join recharge_history r
+on s.subscriber_id=r.subscriber_id
+where s.plan_type='prepaid'
+group by s.subscriber_id,s.subscriber_name;
+
+select * from vw_prepaid_subscribers;
+select * from vw_recharge_summary;
+
+-- task 2: recharge procedure with validation and transaction
+-- a valid recharge adds the given amount to the subscriber balance
+ delimiter $$
+create procedure sp_recharge(
+ in sid int,in pid int,in amt decimal(10,2),
+ out newbalance decimal(10,2)
+)
+begin
+ declare oldbalance decimal(10,2);
+ declare subscriber_count int default 0;
+ declare plan_count int default 0;
+ declare exit handler for sqlexception
+ begin
+  rollback;
+  resignal;
+ end;
+ if amt is null or amt<=0 then
+  signal sqlstate '45000' set message_text='amount must be positive';
+ end if;
+ select count(*) into plan_count from plans where plan_id=pid;
+ if plan_count=0 then
+  signal sqlstate '45000' set message_text='invalid plan';
+ end if;
+ start transaction;
+ select count(*) into subscriber_count from subscribers
+ where subscriber_id=sid and plan_type='prepaid';
+ if subscriber_count=0 then
+  signal sqlstate '45000' set message_text='invalid prepaid subscriber';
+ end if;
+ select balance into oldbalance from subscribers
+ where subscriber_id=sid for update;
+ update subscribers set balance=oldbalance+amt where subscriber_id=sid;
+ insert into recharge_history(subscriber_id,plan_id,amount,recharge_date)
+ values(sid,pid,amt,now());
+ set newbalance=oldbalance+amt;
+ commit;
+end$$
+delimiter ;
+
+call sp_recharge(1,1,100,@newbalance);
+select @newbalance as newbalance;
+select * from recharge_history;
+
+-- task 3: function for days remaining in a plan
+-- uses the latest recharge date and that plan's validity
+ delimiter $$
+create function fn_validity_days_left(sid int)
+returns int
+reads sql data
+begin
+ declare daysleft int;
+ select greatest(datediff(date_add(date(r.recharge_date),
+ interval p.validity_days day),curdate()),0)
+ into daysleft
+ from recharge_history r join plans p on r.plan_id=p.plan_id
+ where r.subscriber_id=sid
+ order by r.recharge_date desc,r.recharge_id desc limit 1;
+ return daysleft;
+end$$
+delimiter ;
+
+select subscriber_id,subscriber_name,
+fn_validity_days_left(subscriber_id) as days_left
+from vw_prepaid_subscribers;
+-- null means the subscriber has no recharge history
+
+-- task 4a: cursor with not found handler
+ delimiter $$
+create procedure notify_with_cursor()
+begin
+ declare done int default 0;
+ declare sid int;
+ declare cur cursor for
+ select subscriber_id from vw_prepaid_subscribers where balance<50;
+ declare continue handler for not found set done=1;
+ open cur;
+ readloop: loop
+  fetch cur into sid;
+  if done=1 then leave readloop; end if;
+  insert into notifications(subscriber_id,message,created_at)
+  values(sid,'low balance: please recharge',now());
+ end loop;
+ close cur;
+end$$
+delimiter ;
+
+-- timing: run each method separately and compare elapsed microseconds
+truncate table notifications;
+set @start=now(6);
+call notify_with_cursor();
+set @cursor_us=timestampdiff(microsecond,@start,now(6));
+select * from notifications;
+
+-- task 4b: one insert ... select
+truncate table notifications;
+set @start=now(6);
+insert into notifications(subscriber_id,message,created_at)
+select subscriber_id,'low balance: please recharge',now()
+from vw_prepaid_subscribers where balance<50;
+set @insert_us=timestampdiff(microsecond,@start,now(6));
+select * from notifications;
+select @cursor_us as cursor_microseconds,
+@insert_us as insert_select_microseconds;
+-- timings vary; test with more rows for a meaningful comparison
+
+-- task 5: error handling example
+-- invalid amount causes signal; handler rolls back and resignal passes error
+-- run this separately to see the error (it is expected):
+-- call sp_recharge(1,1,-10,@newbalance);
